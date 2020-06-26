@@ -1,21 +1,16 @@
-// pwm_servo.rs - Rotates a servo using hardware PWM.
-//
-// Calibrate your servo beforehand, and change the values listed below to fall
-// within your servo's safe limits to prevent potential damage. Don't power the
-// servo directly from the Pi's GPIO header. Current spikes during power-up and
-// stalls could otherwise damage your Pi, or cause your Pi to spontaneously
-// reboot, corrupting your microSD card. If you're powering the servo using a
-// separate power supply, remember to connect the grounds of the Pi and the
-// power supply together.
-//
 // Interrupting the process by pressing Ctrl-C causes the application to exit
 // immediately without disabling the PWM channel. Check out the
 // gpio_blinkled_signals.rs example to learn how to properly handle incoming
 // signals to prevent an abnormal termination.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
+
+// The simple-signal crate is used to handle incoming signals.
+use simple_signal::{self, Signal};
 
 use rppal::pwm::{Channel, Polarity, Pwm};
 //
@@ -44,16 +39,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     thread::sleep(Duration::from_millis(300));
     pwm.set_pulse_width(Duration::from_micros(PULSE_MAX_US))?;
     thread::sleep(Duration::from_millis(20));
-    
-    for _ in {0..10} {
-        pwm.set_pulse_width(Duration::from_micros(1600))?;
-        thread::sleep(Duration::from_millis(200));
-    }
 
+    // We'll be checking to see if Ctrl^C is called, and if so, will kill the PWM signal
+    let running = Arc::new(AtomicBool::new(true));
+    // When a SIGINT (Ctrl-C) or SIGTERM signal is caught, atomically set running to false.
+    simple_signal::set_handler(&[Signal::Int, Signal::Term], {
+        let running = running.clone();
+        move |_| {
+            running.store(false, Ordering::SeqCst);
+        }
+    });
+
+    // Run the PWM signal at ~1/3 (1500-1800 positive range) thrust
+    // Wil run for either 10 seconds or until command is manually canceled
+    let mut i = 0;
+    while running.load(Ordering::SeqCst) && (i < 10) {
+        pwm.set_pulse_width(Duration::from_micros(1600))?;
+        thread::sleep(Duration::from_millis(1000));
+        i +=1;
+    }
+    
+    // Makes sure PWM gets disabled before shutdown, although this should happen 
+    // when the pwm struct goes out of scope at the end anyway
     pwm.disable()?;
 
     Ok(())
 
-    // When the pwm variable goes out of scope, the PWM channel is automatically disabled.
-    // You can manually disable the channel by calling the Pwm::disable() method.
 }
